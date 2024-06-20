@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+	<name>System Channel Restorer</name>
+	<version>1.0-beta</version>
+	<release_date>20240518000000</release_date>
+	<coder>thepikachugamer</coder>
+	<short_description>Re-install missing system channels</short_description>
+	<long_description>This application allows you to (easily) re-install missing/removed system apps,
+e.g. Mii Channel/Photo Channel on vWii/Wii Mini, or EULA/Region select on region-changed Wiis.
+
+Source code: https://github.com/Naim2000/system-channel-restorer
+</long_description>
+<ahb_access/>
+</app>

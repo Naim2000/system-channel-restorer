@@ -46,6 +46,7 @@ static size_t WriteToBlob(void* buffer, size_t size, size_t nmemb, void* userp) 
 	return length;
 }
 
+#if 0
 static int xferinfo_cb(void* userp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
 	xferinfo_data* data = userp;
 
@@ -66,6 +67,7 @@ static int xferinfo_cb(void* userp, curl_off_t dltotal, curl_off_t dlnow, curl_o
 
 	return 0;
 }
+#endif
 
 int network_init() {
 	if ((network_up = wiisocket_get_status()) > 0)
@@ -91,7 +93,7 @@ void network_deinit() {
 int DownloadFile(char* url, DownloadType type, void* data, void* userp) {
 	CURL* curl;
 	CURLcode res;
-	xferinfo_data xferdata = {};
+//	xferinfo_data xferdata = {};
 
 	curl = curl_easy_init();
 	if (!curl)

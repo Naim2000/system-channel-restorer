@@ -5,9 +5,9 @@
 #include <ogc/cache.h>
 #include <ogc/video.h>
 #include <ogc/color.h>
-#include <ogc/video_types.h>
-#include <ogc/gx_struct.h>
 #include <ogc/consol.h>
+
+#include "malloc.h"
 
 static void* xfb = NULL;
 static GXRModeObj vmode = {};
@@ -31,7 +31,7 @@ void init_video() {
 	}
 
 	size_t fbSize = VIDEO_GetFrameBufferSize(&vmode) + 0x100;
-	xfb = aligned_alloc(0x20, (fbSize + 0x1F) & ~0x1F);
+	xfb = memalign32(fbSize);
 	DCInvalidateRange(xfb, fbSize);
 	xfb = MEM_K0_TO_K1(xfb);
 

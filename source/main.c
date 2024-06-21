@@ -103,12 +103,10 @@ static bool SelectChannels(Channel* channels[], int cnt) {
 static int InstallChannel(Channel* ch) {
 	struct Title title = {};
 
-	printf("	>> Downloading %016llx metadata...\n", ch->titleID);
+//	printf("	>> Downloading %016llx metadata...\n", ch->titleID);
 	int ret = DownloadTitleMeta(ch->titleID, -1, &title);
-	if (ret < 0) {
-		printf("failed! (%i)\n", ret);
+	if (ret < 0)
 		return ret;
-	}
 
 	if (ch->titleID_new) {
 		ChangeTitleID(&title, ch->titleID_new);
@@ -119,13 +117,10 @@ static int InstallChannel(Channel* ch) {
 		Fakesign(&title);
 	}
 
-	printf("	>> Installing %016llx...\n", ch->titleID);
 	ret = InstallTitle(&title, ch->titleID >> 32 != 0x1); //lazy fix
 	FreeTitle(&title);
-	if (ret < 0) {
-		printf("failed! (%i)\n", ret);
+	if (ret < 0)
 		return ret;
-	}
 
 	return 0;
 }
@@ -315,8 +310,9 @@ int main() {
 
 	printf("Console region: %-24s    Console Type: %s\n\n", strRegionLetter(regionLetter), strConsoleType(ThisConsole));
 
-	if (network_init() < 0) {
-		puts("Failed to initialize network!");
+	int ret = network_init();
+	if (ret < 0) {
+		printf("Failed to initialize network! (%i)\n", ret);
 		goto exit;;
 	}
 
@@ -347,8 +343,12 @@ int main() {
 	for (Channel* ch = channels; ch < channels + NBR_CHANNELS; ch++) {
 		if (!ch->selected) continue;
 
-		printf("[*] Installing %s...\n", ch->name);
-		InstallChannel(ch);
+		printf("[*] Installing %s... ", ch->name);
+		ret = InstallChannel(ch);
+		if (ret < 0)
+			printf("Failed! (%i)\n", ret);
+		else
+			puts("OK!");
 	}
 
 exit:

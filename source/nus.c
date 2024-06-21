@@ -1,31 +1,20 @@
 #include <string.h>
 #include <stdlib.h>
+#include <sys/param.h>
 #include <curl/curl.h>
 #include <errno.h>
-// #include <sys/param.h>
 #include <ogc/es.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/sha1.h>
-#include <ogc/isfs.h>
 
-#include "network.h"
 #include "nus.h"
-
-#define MIN(a, b) ({         \
-	__typeof__(a) x = (a);   \
-	__typeof__(b) y = (b);   \
-	x > y ? x : y;           \
-})
-
-#define roundup(val, by) \
-	(val + (by - 1)) & ~(by - 1)
+#include "malloc.h"
+#include "network.h"
+#include "nand.h"
 
 #define NUS_SERVER "nus.cdn.shop.wii.com"
 
-#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
-
 static const aeskey wii_ckey = {0xEB, 0xE4, 0x2A, 0x22, 0x5E, 0x85, 0x93, 0xE4, 0x48, 0xD9, 0xC5, 0x45, 0x73, 0x81, 0xAA, 0xF7};
-
 
 typedef union {
 	uint16_t index;
@@ -41,133 +30,96 @@ typedef struct {
 	sha1 hash;
 } SharedContent;
 
-/*
-static size_t ES_DownloadContentData(void* buffer, size_t size, size_t nmemb, void* userp) {
-	int cfd = *(int*)userp;
-	size_t len = size * nmemb;
+static void get_title_key(tik* ticket, aeskey key) {
+	mbedtls_aes_context aes = {};
+	aesiv iv = { .tid = ticket->titleid };
 
-	if ((uintptr_t)buffer & 0x1F) {
-		void* temp = memalign(0x20, len); iosc what the hell do you mean unaligned data
-		if (!temp)
-			return CURL_WRITEFUNC_ERROR;
-
-		memcpy(temp, buffer, len);
-		ES_AddContentData(cfd, temp, len);
-		free(temp);
-	}
-	else
-		ES_AddContentData(cfd, buffer, len);
-
-	return len;
+	mbedtls_aes_setkey_dec(&aes, wii_ckey, 128);
+	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, sizeof(aeskey), iv.full, ticket->cipher_title_key, key);
 }
-*/
-
-static void* alloc(size_t size) { return aligned_alloc(0x20, roundup(size, 0x20)); } // Turns out memalign is fucked
 
 int GetInstalledTitle(int64_t titleID, struct Title* title) {
 	int ret;
-	void* buffer = NULL;
+	char filepath[30];
 
-	*title = (struct Title){};
+	memset(title, 0, sizeof(struct Title));
 
-	uint32_t tmd_size = 0;
-	ret = ES_GetStoredTMDSize(titleID, &tmd_size);
-	if (ret < 0 || !tmd_size)
-		goto error;
-
-	buffer = alloc(tmd_size);
-	if (!buffer) {
-		ret = -ENOMEM;
-		goto error;
-	}
-
-	ret = ES_GetStoredTMD(titleID, buffer, tmd_size);
+	strcpy(filepath, "/sys/cert.sys");
+	ret = NANDReadFileSimple(filepath, sizeof(RetailCerts), (unsigned char**)&title->certs, NULL);
 	if (ret < 0)
-		goto error;
+		return ret;
 
-	title->s_tmd = buffer;
-	title->tmd_size = tmd_size;
+	ret = GetStoredTMD(titleID, &title->s_tmd, &title->tmd_size);
+	if (ret < 0)
+		return ret;
+
 	title->tmd = SIGNATURE_PAYLOAD(title->s_tmd);
 
-	char filepath[30];
-	sprintf(filepath, "/ticket/%08x/%08x.tik", (uint32_t)(titleID >> 32), (uint32_t)(titleID & 0xFFFFFFFF));
-	int fd = ret = ISFS_Open(filepath, ISFS_OPEN_READ);
+	sprintf(filepath, "/ticket/%08x/%08x.tik", (uint32_t)(titleID >> 32), (uint32_t)titleID);
+	ret = NANDReadFileSimple(filepath, STD_SIGNED_TIK_SIZE, (unsigned char**)&title->s_tik, &title->tik_size);
 	if (ret < 0)
-		goto error;
+		return ret;
 
-	buffer = alloc(STD_SIGNED_TIK_SIZE);
-	if (!buffer) {
-		ret = -ENOMEM;
-		goto error;
-	}
-
-	ret = ISFS_Read(fd, buffer, STD_SIGNED_TIK_SIZE);
-	ISFS_Close(fd);
-
-	if (ret != STD_SIGNED_TIK_SIZE) {
-		ret = -EIO;
-		goto error;
-	}
-
-	title->s_tik = buffer;
-	title->tik_size = STD_SIGNED_TIK_SIZE;
 	title->ticket = SIGNATURE_PAYLOAD(title->s_tik);
 
 	mbedtls_aes_context aes = {};
 	aesiv iv = {};
 
 	iv.tid = title->ticket->titleid;
-	mbedtls_aes_setkey_dec(&aes, wii_ckey, sizeof(aeskey) * 8);
+	mbedtls_aes_setkey_dec(&aes, wii_ckey, 128);
 	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, sizeof(aeskey), iv.full, title->ticket->cipher_title_key, title->key);
 
 	title->id = titleID;
 	title->local = true;
 	return 0;
-
-error:
-	free(buffer);
-	return ret;
 }
 
 int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 	int ret;
-	char url[0x80];
-	blob tmd = {}, cetk = {};
+	char url[120];
+	blob meta = {}, cetk = {};
 
-	sprintf(url, "%s/ccs/download/%016llx/", NUS_SERVER, titleID);
+	sprintf(url, "http://" NUS_SERVER "/ccs/download/%016llx/", titleID);
+
+	memset(title->certs, 0, sizeof(RetailCerts));
+
+	title->certs = memalign32(sizeof(RetailCerts));
+	if (!title->certs)
+		return -ENOMEM;
 
 	if (titleRev > 0)
 		sprintf(strrchr(url, '/'), "/tmd.%hu", (uint16_t)titleRev);
 	else
 		strcpy (strrchr(url, '/'), "/tmd");
 
-	ret = DownloadFile(url, DOWNLOAD_BLOB, &tmd, NULL);
+	ret = DownloadFile(url, DOWNLOAD_BLOB, &meta, NULL);
 	if (ret < 0)
-		return ret;
+		goto fail;
 
-	title->s_tmd = tmd.ptr;
-	title->tmd_size = tmd.size;
+	title->s_tmd = meta.ptr;
+	title->tmd_size = SIGNED_TMD_SIZE(title->s_tmd);
 	title->tmd = SIGNATURE_PAYLOAD(title->s_tmd);
+	PickUpTaggedCerts(meta.ptr + title->tmd_size, meta.size - title->tmd_size, title->certs);
 
 	sprintf(strrchr(url, '/'), "/cetk");
 	ret = DownloadFile(url, DOWNLOAD_BLOB, &cetk, NULL);
 	if (ret < 0)
-		return ret;
+		goto fail;
 
 	title->s_tik = cetk.ptr;
-	title->tik_size = cetk.size;
+	title->tik_size = STD_SIGNED_TIK_SIZE;
 	title->ticket = SIGNATURE_PAYLOAD(title->s_tik);
+	PickUpTaggedCerts(cetk.ptr + title->tik_size, cetk.size - title->tik_size, title->certs);
 
-	mbedtls_aes_context aes = {};
-	aesiv iv = {};
-
-	iv.tid = title->ticket->titleid;
-	mbedtls_aes_setkey_dec(&aes, wii_ckey, sizeof(aeskey) * 8);
-	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, sizeof(aeskey), iv.full, title->ticket->cipher_title_key, title->key);
+	get_title_key(title->ticket, title->key);
 
 	title->id = titleID;
 
 	return 0;
+
+fail:
+	FreeTitle(title);
+	return ret;
 }
 
 void ChangeTitleID(struct Title* title, int64_t new) {
@@ -175,7 +127,7 @@ void ChangeTitleID(struct Title* title, int64_t new) {
 	aesiv iv = {};
 
 	iv.tid = new;
-	mbedtls_aes_setkey_enc(&aes, wii_ckey, sizeof(aeskey) * 8);
+	mbedtls_aes_setkey_enc(&aes, wii_ckey, 128);
 	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, sizeof(aeskey), iv.full, title->key, title->ticket->cipher_title_key);
 	title->tmd->title_id = new;
 
@@ -187,17 +139,22 @@ static int PurgeTitle(int64_t titleid) {
 	uint32_t viewcnt = 0;
 	tikview* views, view ATTRIBUTE_ALIGN(0x20);
 
-	ES_DeleteTitleContent(titleid);
-	ES_DeleteTitle(titleid);
+	ret = ES_DeleteTitleContent(titleid);
+	if (ret && ret != -106)
+		return ret;
+
+	ret = ES_DeleteTitle(titleid);
+	if (ret && ret != -106)
+		return ret;
 
 	ret = ES_GetNumTicketViews(titleid, &viewcnt);
-	if (ret < 0)
+	if (ret && ret != -106)
 		return ret;
 
 	if (!viewcnt)
 		return ENOENT;
 
-	views = alloc(sizeof(tikview) * viewcnt);
+	views = memalign32(sizeof(tikview) * viewcnt);
 	if (!views)
 		return -ENOMEM;
 
@@ -219,36 +176,8 @@ static int PurgeTitle(int64_t titleid) {
 int InstallTitle(struct Title* title, bool purge) {
 	int ret;
 	signed_blob* s_buffer = NULL;
-	signed_blob* certs = NULL;
-	size_t certs_size = 0;
 	SharedContent* sharedContents = NULL;
-	int sharedContentsCount = 0;
-
-	fstats isfs_fstats ATTRIBUTE_ALIGN(0x20) = {};
-
-	/* TODO: build the cert chain from tmd/ticket if it was downloaded? */
-	int fd = ret = ISFS_Open("/sys/cert.sys", ISFS_OPEN_READ);
-	if (ret < 0)
-		return ret;
-
-	ret = ISFS_GetFileStats(fd, &isfs_fstats);
-	if (ret < 0) {
-		ISFS_Close(fd);
-		return ret;
-	}
-
-	certs_size = isfs_fstats.file_length;
-	certs = alloc(certs_size);
-	if (!certs) {
-		ISFS_Close(fd);
-		ret = -ENOMEM;
-		goto finish;
-	}
-
-	ret = ISFS_Read(fd, certs, certs_size);
-	ISFS_Close(fd);
-	if (ret < 0)
-		goto finish;
+	uint32_t sharedContentsCount = 0;
 
 	if (purge) {
 		ret = PurgeTitle(title->tmd->title_id);
@@ -256,47 +185,25 @@ int InstallTitle(struct Title* title, bool purge) {
 			goto finish;
 	}
 
-	fd = ret = ISFS_Open("/shared1/content.map", ISFS_OPEN_READ);
+	ret = NANDReadFileSimple("/shared1/content.map", 0, (unsigned char**)&sharedContents, &sharedContentsCount);
 	if (ret < 0)
 		goto finish;
 
-	ret = ISFS_GetFileStats(fd, &isfs_fstats);
-	if (ret < 0) {
-		ISFS_Close(fd);
-		goto finish;
-	}
+	sharedContentsCount /= sizeof(SharedContent);
 
-	sharedContentsCount =  isfs_fstats.file_length / sizeof(SharedContent);
-	sharedContents = alloc(isfs_fstats.file_length);
-	if (!sharedContents) {
-		ISFS_Close(fd);
-		ret = -ENOMEM;
-		goto finish;
-	}
-
-	ret = ISFS_Read(fd, sharedContents, isfs_fstats.file_length);
-	ISFS_Close(fd);
-	if (ret < 0)
-		goto finish;
-
-	size_t
-		tiksize = STD_SIGNED_TIK_SIZE,
-		tmdsize = SIGNED_TMD_SIZE(title->s_tmd),
-		bufsize = MIN(tmdsize, tiksize);
-
-	s_buffer = alloc(bufsize);
+	s_buffer = memalign32(MAX(title->tmd_size, title->tik_size));
 	if (!s_buffer) {
 		ret = -ENOMEM;
 		goto finish;
 	}
 
-	memcpy(s_buffer, title->s_tik, tiksize);
-	ret = ES_AddTicket(s_buffer, tiksize, certs, certs_size, NULL, 0);
+	memcpy(s_buffer, title->s_tik, title->tik_size);
+	ret = ES_AddTicket(s_buffer, title->tik_size, (signed_blob*)title->certs, sizeof(RetailCerts), NULL, 0);
 	if (ret < 0)
 		goto finish;
 
-	memcpy(s_buffer, title->s_tmd, tmdsize);
-	ret = ES_AddTitleStart(s_buffer, tmdsize, certs, certs_size, NULL, 0);
+	memcpy(s_buffer, title->s_tmd, title->tmd_size);
+	ret = ES_AddTitleStart(s_buffer, title->tmd_size, (signed_blob*)title->certs, sizeof(RetailCerts), NULL, 0);
 	if (ret < 0)
 		goto finish;
 
@@ -305,9 +212,10 @@ int InstallTitle(struct Title* title, bool purge) {
 
 	for (int i = 0; i < title->tmd->num_contents; i++) {
 		tmd_content* content = title->tmd->contents + i;
-		char url[100];
+		char path[120];
+		void* buffer = NULL;
 
-		if ((content->type & 0x8000)) {
+		if (content->type & 0x8000) {
 			if (title->local) continue;
 
 			bool found = false;
@@ -322,57 +230,33 @@ int InstallTitle(struct Title* title, bool purge) {
 			break;
 
 		if (title->local) {
-			/* ES DEVOPTAB!!!! LETS FUCKING GO!!! // <-- me when the ES_GetTitleID() fails
-			FILE* contentfp = fopen("es:%016llx/ID%08x", "rb");
-			if (!contentfp) {
-				perror("ES devoptab failed :((\n");
-				ret = -errno;
-				break;
-			}
-			*/
+			size_t align_csize = __builtin_align_up(content->size, 0x10);
 
-			size_t align_csize = roundup(content->size, 0x10);
-			void* buffer = alloc(align_csize);
-			if (!buffer) {
-				ret = -ENOMEM;
-				break;
-			}
+			sprintf(path, "/title/%08x/%08x/content/%08x.app", (uint32_t)(title->id >> 32), (uint32_t)title->id, content->cid);
 
-			memset(buffer + align_csize - 0x10, 0, 0x10);
-
-			sprintf(url /* is this guy serious */ , "/title/%08x/%08x/content/%08x.app",
-					(uint32_t)(title->id >> 32), (uint32_t)(title->id & 0xFFFFFFFF), content->cid);
-			fd = ret = ISFS_Open(url, ISFS_OPEN_READ);
-			if (ret < 0)
-				break;
-
-			ret = ISFS_Read(fd, buffer, content->size);
-			ISFS_Close(fd);
-
+			ret = NANDReadFileSimple(path, content->size, (unsigned char**)&buffer, NULL);
 			if (ret < 0)
 				break;
 
 			mbedtls_aes_context aes = {};
 			aesiv iv = { content->index };
 
-			mbedtls_aes_setkey_enc(&aes, title->key, sizeof(aeskey) * 8);
+			mbedtls_aes_setkey_enc(&aes, title->key, 128);
 			mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, align_csize, iv.full, buffer, buffer);
 
 			ret = ES_AddContentData(cfd, buffer, align_csize);
 			free(buffer);
 		}
 		else {
-			blob cdownload = { alloc(0x20) };
-			void* buffer = NULL;
+			blob cdownload = { memalign32(0x20) };
 
-			sprintf(url, "%s/ccs/download/%016llx/%08x", NUS_SERVER, title->id, content->cid);
-			/* ret = DownloadFile(url, DOWNLOAD_CUSTOM, ES_DownloadContentData, &cfd); */
-			ret = DownloadFile(url, DOWNLOAD_BLOB, &cdownload, NULL);
+			sprintf(path, "http://" NUS_SERVER "/ccs/download/%016llx/%08x", title->id, content->cid);
+			ret = DownloadFile(path, DOWNLOAD_BLOB, &cdownload, NULL);
 			if (ret != 0)
 				break;
 
-			if ((uintptr_t)cdownload.ptr & 0x1F) {
-				buffer = alloc(cdownload.size);
+			if (!__builtin_is_aligned(cdownload.ptr, 0x20)) {
+				buffer = memalign32(cdownload.size);
 				if (!buffer) {
 					ret = -ENOMEM;
 					break;
@@ -403,7 +287,6 @@ int InstallTitle(struct Title* title, bool purge) {
 
 finish:
 	free(s_buffer);
-	free(certs);
 	return ret;
 }
 
@@ -418,14 +301,14 @@ bool Fakesign(struct Title* title) {
 
 	for (uint16_t i = 0; i < 0xFFFFu; i++) {
 		title->ticket->padding = i;
-		mbedtls_sha1_ret(title->ticket, sizeof(tik), hash);
+		mbedtls_sha1_ret((const unsigned char*)title->ticket, sizeof(tik), hash);
 		if (!hash[0]) break;
 	}
 	if (hash[0]) return false;
 
 	for (uint16_t i = 0; i < 0xFFFFu; i++) {
 		title->tmd->fill3 = i;
-		mbedtls_sha1_ret(title->tmd, TMD_SIZE(title->tmd), hash);
+		mbedtls_sha1_ret((const unsigned char*)title->tmd, TMD_SIZE(title->tmd), hash);
 		if (!hash[0]) break;
 	}
 	if (hash[0]) return false;
@@ -435,6 +318,7 @@ bool Fakesign(struct Title* title) {
 
 void FreeTitle(struct Title* title) {
 	if (!title) return;
+	free(title->certs);
 	free(title->s_tmd);
 	free(title->s_tik);
 }

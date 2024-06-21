@@ -1,9 +1,12 @@
-#include <ogc/es.h>
 #include <stdint.h>
+
+#include "es.h"
 
 struct Title {
 	int64_t id;
 	bool local;
+
+	RetailCerts* certs;
 
 	signed_blob* s_tmd;
 	size_t tmd_size;

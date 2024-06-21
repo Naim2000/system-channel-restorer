@@ -120,7 +120,7 @@ int DownloadFile(char* url, DownloadType type, void* data, void* userp) {
 			break;
 	}
 	ebuffer[0] = '\x00';
-	printf("\x1b[30;1m	>> %s\x1b[39m\n", url);
+//	printf("\x1b[30;1m	>> %s\x1b[39m\n", url);
 	res = curl_easy_perform(curl);
 	curl_easy_cleanup(curl);
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <app version="1">
 	<name>System Channel Restorer</name>
-	<version>1.0-beta</version>
+	<version>1.0</version>
 	<release_date>20240518000000</release_date>
 	<coder>thepikachugamer</coder>
 	<short_description>Re-install missing system channels</short_description>

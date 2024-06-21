@@ -81,11 +81,11 @@ int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 
 	sprintf(url, "http://" NUS_SERVER "/ccs/download/%016llx/", titleID);
 
-	memset(title->certs, 0, sizeof(RetailCerts));
-
 	title->certs = memalign32(sizeof(RetailCerts));
 	if (!title->certs)
 		return -ENOMEM;
+
+	memset(title->certs, 0, sizeof(RetailCerts));
 
 	if (titleRev > 0)
 		sprintf(strrchr(url, '/'), "/tmd.%hu", (uint16_t)titleRev);

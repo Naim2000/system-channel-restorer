@@ -19,9 +19,6 @@ typedef enum {
 	Wii  = 0x1,
 	vWii = 0x2,
 	Mini = 0x4,
-
-	All = (Wii | vWii | Mini),
-	Decaffeinator_Only = (Wii | Mini),
 } ConsoleType;
 
 enum ChannelFlags {
@@ -39,19 +36,21 @@ enum ChannelFlags {
 
 	/* Will not be available on Korean systems. */
 	NoKRVersion		= 0x08,
+
+	/* Purge this title before installing */
+	Purge			= 0x10,
 };
 
 static ConsoleType ThisConsole = Wii;
 
 typedef struct {
 	const char* name;
-	const char* desc;
+	const char* description;
 	int64_t titleID;
 	enum ChannelFlags flags;
-	ConsoleType allowed;
+	ConsoleType disallowed;
+	bool (*patcher)(struct Title*);
 
-	int64_t titleID_new;
-	int vWii_IOS;
 	bool selected;
 } Channel;
 
@@ -78,7 +77,7 @@ static bool SelectChannels(Channel* channels[], int cnt) {
 			printf("%s%s	%s\x1b[40m\x1b[39m\n", i == index? ">>" : "  ",
 				   channels[i]->selected? "\x1b[47;1m\x1b[30m" : "", channels[i]->name);
 
-		printf("\n\x1b[0J%s", ch->desc ? ch->desc : "no description");
+		printf("\n\x1b[0J%s", ch->description ?: "no description");
 
 		for (;;) {
 			scanpads();
@@ -107,7 +106,7 @@ static int InstallChannel(Channel* ch) {
 	int ret = DownloadTitleMeta(ch->titleID, -1, &title);
 	if (ret < 0)
 		return ret;
-
+/*
 	if (ch->titleID_new) {
 		ChangeTitleID(&title, ch->titleID_new);
 		Fakesign(&title);
@@ -116,8 +115,11 @@ static int InstallChannel(Channel* ch) {
 		title.tmd->sys_version=0x1LL<<32 | ch->vWii_IOS;
 		Fakesign(&title);
 	}
+*/
+	if (ch->patcher && ch->patcher(&title))
+		Fakesign(&title);
 
-	ret = InstallTitle(&title, ch->titleID >> 32 != 0x1); //lazy fix
+	ret = InstallTitle(&title, (bool)(ch->flags & Purge));
 	FreeTitle(&title);
 	if (ret < 0)
 		return ret;
@@ -149,128 +151,226 @@ static const char* strRegionLetter(int c) {
 	return "Unknown (!?)";
 }
 
+static bool patch_photo2_stub(struct Title* HAYA) {
+	// Change TID of course
+	ChangeTitleID(HAYA, 0x0001000048415A41LL);
+
+	HAYA->tmd->num_contents = 1;
+	HAYA->tmd->boot_index   = 0;
+	// HAYA->tmd->sys_version  = 0x0000000100000000 | 31;
+
+	return true;
+}
+
+static bool patch_photo2_update(struct Title* HAYA) {
+	if (ThisConsole == vWii) {
+		HAYA->tmd->sys_version = 0x0000000100000000 | 56; // IOS56
+		return true;
+	}
+
+	return false;
+}
+
+static bool patch_ios56_ios61(struct Title* IOS56) {
+	ChangeTitleID(IOS56, 0x0000000100000000 | 61);
+
+	return true;
+}
+
 static Channel channels[] = {
 	{
-		"EULA",
+		.name = "EULA",
 
-		"Often missing because people don't complete their region changes.\n"
+		.description = "Often missing because people don't complete their region changes.\n"
 		"This will stand out if the User Agreements button demands for a\n"
 		"Wii System Update.",
 
-		0x0001000848414B00, RegionSpecific, All
+		.titleID = 0x0001000848414B00,
+		.flags = (RegionSpecific),
 	},
 
 	{
-		"Region Select",
+		.name = "Region Select",
 
-		"This hidden channel is launched by apps like Mario Kart Wii and\n"
+		.description = "This hidden channel is launched by apps like Mario Kart Wii and\n"
 		"the Everybody Votes Channel. And somehow not in the Forecast\n"
 		"Channel, but whatever.\n\n"
 
 		"Ideal if your console was region changed.",
-		0x0001000848414C00, RegionSpecific, Decaffeinator_Only
+
+		.titleID = 0x0001000848414C00,
+		.flags = (RegionSpecific),
+		.disallowed = vWii
 	},
 
 	{
-		"Set Personal Data",
+		.name = "Set Personal Data",
 
-		"This hidden channel is only used by some Japanese-exclusive\n"
+		.description = "This hidden channel is only used by some Japanese-exclusive\n"
 		"channels, namely the Digicam Print Channel and Demae Channel.\n\n"
 
 		"This won't work very well with the WiiLink services.\n",
-		0x000100084843434A, JPonly, All
+
+		.titleID = 0x000100084843434A,
+		.flags = (JPonly),
 	},
 
 	{
-		"Mii Channel",
+		.name = "Mii Channel",
 
-		"Stock version of the Mii Channel.\n\n"
+		.description = "Stock version of the Mii Channel.\n\n"
 
 		"Will not remove your Miis when (re)installed,\n"
 		"they are stored elsewhere.\n",
-		0x0001000248414341, RegionFree, Wii | Mini
+
+		.titleID = 0x0001000248414341,
+		.disallowed = vWii
 	},
 
 	{
-		"Mii Channel (Wii version)",
+		.name = "Mii Channel (Wii version)",
 
-		"This version of the Mii Channel comes with features removed\n"
+		.description = "This version of the Mii Channel comes with features removed\n"
 		"from the vWii version, specifically sending Miis to\n"
 		"Wii remotes, Wii friends and the Mii Parade.\n\n"
 
 		"Installing this will also remove wuphax (if applicable.)",
-		0x0001000248414341, RegionFree, vWii
+
+		.titleID = 0x0001000248414341,
+		.flags = (Purge),
+		.disallowed = (Wii | Mini) // this entry is targetted to vWii users
 	},
 
 	{
-		"Photo Channel 1.0",
+		.name = "Photo Channel 1.0",
 
-		"Please note that this version does not support SDHC (>2GB) cards.",
-		0x0001000248414141, NoKRVersion, All
+		.description = "Please note that this version does not support SDHC (>2GB) cards.",
+
+		.titleID = 0x0001000248414141,
+		.flags = (NoKRVersion | Purge)
 	},
 
 	{
-		"Photo Channel 1.1b (Update)",
+		.name = "Photo Channel 1.1b (hidden channel)",
 
-		"This hidden channel is launched by the Wii menu when it detects\n"
+		.description = "This hidden channel is launched by the Wii menu when it detects\n"
 		"the Photo Channel 1.1 stub (00010000-HAZA) on the system,\n"
-		"i.e. you downloaded it from the Wii Shop Channel.\n\n"
+		"which is usually downloaded through the Wii Shop Channel.\n\n"
 
-		"See also: IOS61",
-		0x0001000248415900, RegionFreeAndKR, Wii
+		"(Wii users) See also: IOS61",
+
+		.titleID = 0x0001000248415900,
+		.flags = (RegionFreeAndKR),
+		.patcher = patch_photo2_update,
 	},
 
+#if 0
 	{
-		"Photo Channel 1.1b (photo_upgrader style)",
+		.name = "Photo Channel 1.1b (photo_upgrader style)",
 
-		"This is the hidden channel with it's title ID changed to HAAA,\n"
+		.description = "This is the hidden channel with it's title ID changed to HAAA,\n"
 		"replacing Photo Channel 1.0 in the process.\n",
 
-		0x0001000248415900, RegionFreeAndKR, All, 0x0001000248414141, 58
+		.titleID = 0x0001000248415900,
+		.flags = (RegionFreeAndKR | Purge),
+
+		.titleID_new = 0x0001000248414141,
+		.vWii_IOS = 58
+	},
+#endif
+	{
+		.name = "Photo Channel 1.1b (stub trick)",
+
+		.description = "This is the hidden channel with it's title ID changed to HAZA,\n"
+		"to imitate the stub and show the proper channel.\n",
+
+		.titleID = 0x0001000248415900,
+		.flags = (RegionFreeAndKR | Purge),
+		.patcher = patch_photo2_stub,
 	},
 
 	{
-		"Wii Shop Channel",
+		.name = "Wii Shop Channel",
 
-		"Install this if the shop is bugging you to update.\n\n"
+		.description = "Install this if the shop is bugging you to update.\n\n"
 
 		"See also: IOS61",
-		0x0001000248414200, RegionFreeAndKR, Decaffeinator_Only
+
+		.titleID = 0x0001000248414200,
+		.flags = (RegionFreeAndKR),
+		.disallowed = vWii
 	},
 
 	{
-		"Internet Channel",
+		.name = "Internet Channel",
 
-		"Official Wii Internet browser, powered by Opera.\n"
+		.description = "Official Wii Internet browser, powered by Opera.\n"
 		"Does not support modern encryption. Won't work with a lot of sites.",
-		0x0001000148414400, RegionSpecific | NoKRVersion, All
+
+		.titleID = 0x0001000148414400,
+		.flags = (RegionSpecific | NoKRVersion)
 	},
 
 	{
-		"IOS58",
+		.name = "IOS58",
 
-		"The only part of the 4.3 update that mattered.\n"
+		.description = "The only part of the 4.3 update that mattered.\n"
 		"If you do not already have this, re-install the Homebrew Channel\n"
 		"to make it use IOS58.\n\n"
 
 		"Re-launching the HackMii Installer: https://wii.hacks.guide/hackmii",
-		0x0000000100000000 | 58, RegionFree, Wii
+
+		.titleID = 0x0000000100000000 | 58,
+		.disallowed = (vWii | Mini)
 	},
-
+#if 0
 	{
-		"IOS61",
+		.name = "IOS59",
 
-		"Released in 4.0.\n"
+		.description = "IOS58 part 2 electric boogaloo, featuring a WFS\n"
+		"driver for use with Dragon Quest X and the USB Repair Tool.\n\n"
+
+		"Despite the above sentence, this doesn't mean that plugging in\n"
+		"your Wii U's hard drive after installing this will make magic happen.",
+
+		.titleID = 0x0000000100000000 | 59,
+		.disallowed = (vWii | Mini)
+	},
+#endif
+	{
+		.name = "IOS61",
+
+		.description = "Released in 4.0.\n"
 		"Used by the latest Wii Shop Channel and Photo Channel 1.1.",
-		0x0000000100000000 | 61, RegionFree, Wii
+
+		.titleID = 0x0000000100000000 | 61,
+		.disallowed = (vWii | Mini)
 	},
 
+#if 0
 	{
-		"IOS62",
+		.name = "vIOS61",
 
-		"Used by the Wii U Transfer Tool. If your Wii Shop Channel is not updated,\n"
+		.description = "This name might ring a bell for RiiConnect24 Patcher users.\n\n"
+
+		"Despite not existing on vWii, it's literally the exact same as IOS56,\n"
+		"so nobody's stopping us from just....",
+
+		.titleID = 0x0000000700000000 | 56,
+		.disallowed = (Wii | Mini),
+
+		.patcher = patch_ios56_ios61,
+	}
+#endif
+
+	{
+		.name = "IOS62",
+
+		.description = "Used by the Wii U Transfer Tool. If your Wii Shop Channel is not updated,\n"
 		"you likely need this as well.",
-		0x0000000100000000 | 62, RegionFree, Wii
+
+		.titleID = 0x0000000100000000 | 62,
+		.disallowed = (vWii | Mini)
 	},
 };
 #define NBR_CHANNELS (sizeof(channels) / sizeof(Channel))
@@ -303,7 +403,7 @@ int main() {
 		if (!GetInstalledTitle(0x100000002LL, &sm)) {
 			uint16_t sm_rev = sm.tmd->title_version;
 			FreeTitle(&sm);
-			if ((sm_rev & ~0x0001) == 0x1200)
+			if ((sm_rev & 0xFFE0) == 0x1200)
 				ThisConsole = Mini;
 		}
 	}
@@ -324,7 +424,7 @@ int main() {
 	int i = 0;
 	Channel* allowedChannels[NBR_CHANNELS] = {};
 	for (Channel* ch = channels; ch < channels + NBR_CHANNELS; ch++) {
-		if (!(ch->allowed & ThisConsole)) continue;
+		if (ch->disallowed & ThisConsole) continue;
 
 		if ((ch->flags & JPonly) && regionLetter != 'J') continue;
 		else if ((ch->flags & NoKRVersion) && regionLetter == 'K') continue;
@@ -332,7 +432,6 @@ int main() {
 		if (ch->flags & RegionSpecific) ch->titleID |= regionLetter;
 		else if (ch->flags & RegionFreeAndKR) ch->titleID |= (regionLetter == 'K') ? 'K' : 'A';
 		allowedChannels[i++] = ch;
-
 	}
 
 	if (!SelectChannels(allowedChannels, i)) goto exit;
@@ -343,7 +442,7 @@ int main() {
 	for (Channel* ch = channels; ch < channels + NBR_CHANNELS; ch++) {
 		if (!ch->selected) continue;
 
-		printf("[*] Installing %s... ", ch->name);
+		printf("[*] Installing %s...\n", ch->name);
 		ret = InstallChannel(ch);
 		if (ret < 0)
 			printf("Failed! (%i)\n", ret);

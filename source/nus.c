@@ -92,6 +92,7 @@ int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 	else
 		strcpy (strrchr(url, '/'), "/tmd");
 
+	puts("	>> Downloading TMD...");
 	ret = DownloadFile(url, DOWNLOAD_BLOB, &meta, NULL);
 	if (ret < 0)
 		goto fail;
@@ -101,6 +102,7 @@ int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 	title->tmd = SIGNATURE_PAYLOAD(title->s_tmd);
 	PickUpTaggedCerts(meta.ptr + title->tmd_size, meta.size - title->tmd_size, title->certs);
 
+	puts("	>> Downloading ticket...");
 	sprintf(strrchr(url, '/'), "/cetk");
 	ret = DownloadFile(url, DOWNLOAD_BLOB, &cetk, NULL);
 	if (ret < 0)
@@ -197,11 +199,13 @@ int InstallTitle(struct Title* title, bool purge) {
 		goto finish;
 	}
 
+	puts("	>> Installing ticket...");
 	memcpy(s_buffer, title->s_tik, title->tik_size);
 	ret = ES_AddTicket(s_buffer, title->tik_size, (signed_blob*)title->certs, sizeof(RetailCerts), NULL, 0);
 	if (ret < 0)
 		goto finish;
 
+	puts("	>> Installing TMD...");
 	memcpy(s_buffer, title->s_tmd, title->tmd_size);
 	ret = ES_AddTitleStart(s_buffer, title->tmd_size, (signed_blob*)title->certs, sizeof(RetailCerts), NULL, 0);
 	if (ret < 0)
@@ -225,6 +229,7 @@ int InstallTitle(struct Title* title, bool purge) {
 			if (found) continue;
 		}
 
+		printf("	>> Installing content #%u...\n", content->index);
 		int cfd = ret = ES_AddContentStart(title->tmd->title_id, content->cid);
 		if (ret < 0)
 			break;
@@ -241,6 +246,7 @@ int InstallTitle(struct Title* title, bool purge) {
 			mbedtls_aes_context aes = {};
 			aesiv iv = { content->index };
 
+			// Shower thought: just use ES_ExportContentData
 			mbedtls_aes_setkey_enc(&aes, title->key, 128);
 			mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, align_csize, iv.full, buffer, buffer);
 
@@ -279,8 +285,10 @@ int InstallTitle(struct Title* title, bool purge) {
 
 	}
 
-	if (!ret)
+	if (!ret) {
+		puts("	>> Finishing installation...");
 		ret = ES_AddTitleFinish();
+	}
 
 	if (ret < 0)
 		ES_AddTitleCancel();

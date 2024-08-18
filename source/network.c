@@ -14,6 +14,9 @@ static char ebuffer[CURL_ERROR_SIZE] = {};
 typedef size_t (*fwrite_wannabe)(void*, size_t, size_t, void*);
 typedef struct xferinfo_data_s {
 	u64 start;
+
+	u32 lastvalue_time;
+	curl_off_t lastvalue;
 } xferinfo_data;
 
 char* PrintIPAddress() {
@@ -46,28 +49,36 @@ static size_t WriteToBlob(void* buffer, size_t size, size_t nmemb, void* userp) 
 	return length;
 }
 
-#if 0
 static int xferinfo_cb(void* userp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
-	xferinfo_data* data = userp;
+	xferinfo_data* data = (xferinfo_data*)userp;
 
 	if (!dltotal)
 		return 0;
 
-	if (!data->start)
+	if (!data->start) {
 		data->start = gettime();
+	}
 
 	u64 now = gettime();
 	u32 elapsed = diff_msec(data->start, now);
 
+	if (data->lastvalue!= dlnow) {
+		data->lastvalue = dlnow;
+		data->lastvalue_time = elapsed;
+	}
+	else if (elapsed - data->lastvalue_time >= 15000) {
+		printf("\n\t\tThis download hasn't moved for a while (%ums). Let's stop.\n", elapsed - data->lastvalue_time);
+		return -1;
+	}
+
 	float f_dlnow = dlnow / 1024.f;
 	float f_dltotal = dltotal / 1024.f;
 
-	printf("\r%.2f/%.2f KB // %.2f KB/s...",
+	printf("\r\t\t%.2f/%.2f KB // %.2f KB/s...",
 		  f_dlnow, f_dltotal, f_dlnow / (elapsed / 1000.f));
 
 	return 0;
 }
-#endif
 
 int network_init() {
 	if ((network_up = wiisocket_get_status()) > 0)
@@ -93,7 +104,7 @@ void network_deinit() {
 int DownloadFile(char* url, DownloadType type, void* data, void* userp) {
 	CURL* curl;
 	CURLcode res;
-//	xferinfo_data xferdata = {};
+	xferinfo_data xferdata = {};
 
 	curl = curl_easy_init();
 	if (!curl)
@@ -102,9 +113,9 @@ int DownloadFile(char* url, DownloadType type, void* data, void* userp) {
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, ebuffer);
-//	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-//	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
-//	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &xferdata);
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &xferdata);
 	switch (type) {
 		case DOWNLOAD_BLOB:
 			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToBlob);
@@ -120,8 +131,9 @@ int DownloadFile(char* url, DownloadType type, void* data, void* userp) {
 			break;
 	}
 	ebuffer[0] = '\x00';
-//	printf("\x1b[30;1m	>> %s\x1b[39m\n", url);
+	// printf("\x1b[30;1m	>> %s\x1b[39m\n", url);
 	res = curl_easy_perform(curl);
+	putchar('\n');
 	curl_easy_cleanup(curl);
 
 	if (res != CURLE_OK) {

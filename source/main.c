@@ -157,6 +157,7 @@ static bool patch_photo2_stub(struct Title* HAYA) {
 
 	HAYA->tmd->num_contents = 1;
 	HAYA->tmd->boot_index   = 0;
+	HAYA->tmd_size          = SIGNED_TMD_SIZE(HAYA->s_tmd);
 	// HAYA->tmd->sys_version  = 0x0000000100000000 | 31;
 
 	return true;
@@ -285,7 +286,7 @@ static Channel channels[] = {
 		"to imitate the stub and show the proper channel.\n",
 
 		.titleID = 0x0001000248415900,
-		.flags = (RegionFreeAndKR | Purge),
+		.flags = (RegionFreeAndKR),
 		.patcher = patch_photo2_stub,
 	},
 

@@ -151,14 +151,24 @@ static const char* strRegionLetter(int c) {
 	return "Unknown (!?)";
 }
 
-static bool patch_photo2_stub(struct Title* HAYA) {
+static bool patch_photo_photo2_stub(struct Title* HAAA) {
 	// Change TID of course
-	ChangeTitleID(HAYA, 0x0001000048415A41LL);
+	ChangeTitleID(HAAA, 0x0001000048415A41LL);
+	// ChangeTitleID(HAAA, 0x0001000050494B41);
 
-	HAYA->tmd->num_contents = 1;
-	HAYA->tmd->boot_index   = 0;
-	HAYA->tmd_size          = SIGNED_TMD_SIZE(HAYA->s_tmd);
-	// HAYA->tmd->sys_version  = 0x0000000100000000 | 31;
+	HAAA->tmd->num_contents  = 1;
+	HAAA->tmd->boot_index    = 0;
+	HAAA->tmd_size           = SIGNED_TMD_SIZE(HAAA->s_tmd);
+	HAAA->tmd->sys_version   = 0x0000000100000000 | 254; // !
+	HAAA->tmd->title_version = 0;
+
+	return true;
+}
+
+static bool patch_photo_dummy(struct Title* HAAA) {
+	HAAA->tmd->title_version = 0xFF00;
+	HAAA->tmd->num_contents  = 0;
+	HAAA->tmd_size           = SIGNED_TMD_SIZE(HAAA->s_tmd);
 
 	return true;
 }
@@ -225,7 +235,8 @@ static Channel channels[] = {
 		"they are stored elsewhere.\n",
 
 		.titleID = 0x0001000248414341,
-		.disallowed = vWii
+		.disallowed = vWii,
+		.flags = (NoKRVersion)
 	},
 
 	{
@@ -285,9 +296,10 @@ static Channel channels[] = {
 		.description = "This is the hidden channel with it's title ID changed to HAZA,\n"
 		"to imitate the stub and show the proper channel.\n",
 
-		.titleID = 0x0001000248415900,
+		.titleID = 0x0001000248414100,
 		.flags = (RegionFreeAndKR),
-		.patcher = patch_photo2_stub,
+		.patcher = patch_photo_photo2_stub,
+		// .patcher = patch_photo_dummy
 	},
 
 	{

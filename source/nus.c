@@ -8,35 +8,17 @@
 #include <mbedtls/sha1.h>
 
 #include "nus.h"
+#include "crypto.h"
 #include "malloc.h"
 #include "network.h"
 #include "nand.h"
 
 #define NUS_SERVER "nus.cdn.shop.wii.com"
-
-static const aeskey wii_ckey = {0xEB, 0xE4, 0x2A, 0x22, 0x5E, 0x85, 0x93, 0xE4, 0x48, 0xD9, 0xC5, 0x45, 0x73, 0x81, 0xAA, 0xF7};
-
-typedef union {
-	uint16_t index;
-	int64_t tid;
-	uint64_t part[2];
-
-	aeskey full;
-} aesiv;
-
 typedef struct {
 	uint32_t cid;
 	uint32_t _padding;
 	sha1 hash;
 } SharedContent;
-
-static void get_title_key(tik* ticket, aeskey key) {
-	mbedtls_aes_context aes = {};
-	aesiv iv = { .tid = ticket->titleid };
-
-	mbedtls_aes_setkey_dec(&aes, wii_ckey, 128);
-	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, sizeof(aeskey), iv.full, ticket->cipher_title_key, key);
-}
 
 int GetInstalledTitle(int64_t titleID, struct Title* title) {
 	int ret;
@@ -62,12 +44,7 @@ int GetInstalledTitle(int64_t titleID, struct Title* title) {
 
 	title->ticket = SIGNATURE_PAYLOAD(title->s_tik);
 
-	mbedtls_aes_context aes = {};
-	aesiv iv = {};
-
-	iv.tid = title->ticket->titleid;
-	mbedtls_aes_setkey_dec(&aes, wii_ckey, 128);
-	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, sizeof(aeskey), iv.full, title->ticket->cipher_title_key, title->key);
+	GetTitleKey(title->ticket, title->key);
 
 	title->id = titleID;
 	title->local = true;
@@ -78,6 +55,8 @@ int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 	int ret;
 	char url[120];
 	blob meta = {}, cetk = {};
+
+	memset(title, 0, sizeof(struct Title));
 
 	sprintf(url, "http://" NUS_SERVER "/ccs/download/%016llx/", titleID);
 
@@ -113,7 +92,7 @@ int DownloadTitleMeta(int64_t titleID, int titleRev, struct Title* title) {
 	title->ticket = SIGNATURE_PAYLOAD(title->s_tik);
 	PickUpTaggedCerts(cetk.ptr + title->tik_size, cetk.size - title->tik_size, title->certs);
 
-	get_title_key(title->ticket, title->key);
+	GetTitleKey(title->ticket, title->key);
 
 	title->id = titleID;
 
@@ -127,13 +106,17 @@ fail:
 void ChangeTitleID(struct Title* title, int64_t new) {
 	mbedtls_aes_context aes = {};
 	aesiv iv = {};
+	uint8_t cindex = title->ticket->reserved[0xb];
+	if (cindex > 2)
+		cindex = 0;
 
-	iv.tid = new;
-	mbedtls_aes_setkey_enc(&aes, wii_ckey, 128);
+	iv.titleid = new;
+	mbedtls_aes_setkey_enc(&aes, CommonKeys[cindex], 128);
 	mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, sizeof(aeskey), iv.full, title->key, title->ticket->cipher_title_key);
+	title->ticket->titleid = new;
+
 	title->tmd->title_id = new;
 
-	title->ticket->titleid = new;
 }
 
 static int PurgeTitle(int64_t titleid) {
@@ -180,6 +163,11 @@ int InstallTitle(struct Title* title, bool purge) {
 	signed_blob* s_buffer = NULL;
 	SharedContent* sharedContents = NULL;
 	uint32_t sharedContentsCount = 0;
+
+	if (title->ticket->reserved[0xb] != 0) {
+		ChangeCommonKey(title->ticket, 0);
+		Fakesign(title);
+	}
 
 	if (purge) {
 		ret = PurgeTitle(title->tmd->title_id);

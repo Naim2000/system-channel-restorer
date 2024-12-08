@@ -22,5 +22,5 @@ int patchIOS() {
 	if (isDolphin())
 		return 0;
 
-	return IosPatch_FULL(nand_permissions | trucha | kill_antisystitleinstall, false, IOS_GetVersion());
+	return IosPatch_FULL(nand_permissions | trucha | kill_antisystitleinstall | es_deletecheck_patch, false, IOS_GetVersion());
 }

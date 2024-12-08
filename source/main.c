@@ -19,7 +19,7 @@ typedef enum {
 	Wii, vWii, Mini
 } ConsoleType;
 
-static ConsoleType ThisConsole = vWii;
+static ConsoleType ThisConsole = Wii;
 static int ThisRegion = 0;
 
 const char GetSystemRegionLetter(void) {
